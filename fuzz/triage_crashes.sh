@@ -230,6 +230,14 @@ for CRASH_ARCHIVE in "${CRASH_ARCHIVES[@]}"; do
     rm -rf "$DB_DIR"
     mkdir -p "$LOG_DIR" "$DB_DIR"
 
+    # If the fuzz run used tiered storage, repro.env carries a cwd-relative --tiered_prefix.
+    # Rewrite it into this crash's temp dir so the backing files are isolated and cleaned with it.
+    for i in "${!DF_ARGS[@]}"; do
+        if [[ "${DF_ARGS[$i]}" == --tiered_prefix=* ]]; then
+            DF_ARGS[$i]="--tiered_prefix=$DB_DIR/backing"
+        fi
+    done
+
     # Triage-specific flags (not part of the fuzz run):
     # --log_dir captures crash logs; --dir provides a clean writable directory
     # for save-enabled runs (each crash gets its own dir to avoid stale dumps)

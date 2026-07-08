@@ -23,6 +23,13 @@ FUZZ_TARGET="$BUILD_DIR/dragonfly"
 AFL_PROACTOR_THREADS="${AFL_PROACTOR_THREADS:-1}"
 AFL_MEM_MB="${AFL_MEM_MB:-4096}"  # Memory limit (MB) passed to afl-fuzz -m; also written to repro.env
 
+# Tiering (disk-backed storage) fuzzing. When AFL_ENABLE_TIERING=1, Dragonfly is launched with
+# tiered storage enabled so the fuzzer exercises the offload/fetch code paths. Used in the nightly
+# (long) tiering leg. offload_threshold=1.0 offloads eligible values eagerly regardless of memory
+# pressure, so tiering is stressed even with the small values the mutator produces.
+AFL_TIER_MAXMEMORY="${AFL_TIER_MAXMEMORY:-1G}"
+AFL_TIER_OFFLOAD_THRESHOLD="${AFL_TIER_OFFLOAD_THRESHOLD:-1.0}"
+
 # Persistent record: restart server every N iterations and record the last N inputs.
 # This ensures that on crash, ALL inputs that built the current server state are available
 # for replay. Without this, state from earlier iterations is lost and crashes become
@@ -70,6 +77,19 @@ setup_directories() {
         DB_FILENAME=""
     fi
 
+    # When AFL_ENABLE_TIERING=1, enable tiered storage by pointing --tiered_prefix at a temp
+    # backing directory. Dragonfly opens "<prefix>-NNNN.dts" per shard with O_TRUNC, so each
+    # server (re)start gets a fresh backing file. backing_file_direct=false because /tmp may be
+    # tmpfs/overlayfs, which reject O_DIRECT and would otherwise abort the server on startup.
+    if [[ "${AFL_ENABLE_TIERING:-}" == "1" ]]; then
+        TIER_DIR=$(mktemp -d /tmp/dragonfly-fuzz-tier.XXXXXX)
+        TIER_PREFIX="${TIER_DIR}/backing"
+        print_info "Tiering enabled — backing prefix: ${TIER_PREFIX}"
+    else
+        TIER_DIR=""
+        TIER_PREFIX=""
+    fi
+
     if [[ -z "$(ls -A "$CORPUS_DIR" 2>/dev/null)" ]]; then
         if [[ -d "${SEEDS_DIR}" ]] && [[ -n "$(ls -A "${SEEDS_DIR}" 2>/dev/null)" ]]; then
             print_info "Copying seeds to corpus..."
@@ -98,6 +118,7 @@ show_config() {
     echo "  Memory limit:     ${AFL_MEM_MB}MB"
     echo "  Loop limit:      ${AFL_LOOP_LIMIT} (= AFL_PERSISTENT_RECORD)"
     echo "  Save mode:       ${AFL_ENABLE_SAVE:-off}"
+    echo "  Tiering:         ${TIER_PREFIX:-off}"
     echo ""
     print_note "Fuzzing integrated in dragonfly (USE_AFL + persistent mode)"
     print_note "Usage: ./run_fuzzer.sh [resp|memcache]"
@@ -122,6 +143,15 @@ write_repro_env() {
         echo "--omit_basic_usage"
         echo "--restricted_commands=SHUTDOWN,DEBUG,FLUSHALL,FLUSHDB"
         echo "--max_bulk_len=1048576"
+        if [[ -n "$TIER_PREFIX" ]]; then
+            # cwd-relative prefix so repro works from any directory (parent dir = cwd, which always
+            # exists). triage_crashes.sh rewrites this to its per-crash temp dir.
+            echo "--tiered_prefix=tiered_backing"
+            echo "--maxmemory=${AFL_TIER_MAXMEMORY}"
+            echo "--tiered_offload_threshold=${AFL_TIER_OFFLOAD_THRESHOLD}"
+            echo "--backing_file_direct=false"
+            echo "--tiered_experimental_cooling=false"
+        fi
         [[ "$TARGET" == "memcache" ]] && echo "--memcached_port=11211"
     } > "$out"
     print_info "Reproduction environment: ${out}"
@@ -160,6 +190,16 @@ run_fuzzer() {
     )
 
     [[ -n "$DB_DIR" ]] && AFL_CMD+=(--dir="${DB_DIR}")
+
+    if [[ -n "$TIER_PREFIX" ]]; then
+        AFL_CMD+=(
+            --tiered_prefix="${TIER_PREFIX}"
+            --maxmemory="${AFL_TIER_MAXMEMORY}"
+            --tiered_offload_threshold="${AFL_TIER_OFFLOAD_THRESHOLD}"
+            --backing_file_direct=false
+            --tiered_experimental_cooling=false
+        )
+    fi
 
     if [[ "$TARGET" == "memcache" ]]; then
         AFL_CMD+=(--memcached_port=11211 --afl_target_port=11211)

@@ -31,6 +31,14 @@ inputs:
     description: "Build the binary before fuzzing. Set to 'false' when reusing a binary built by a previous action call in the same job — fails if the binary is missing."
     required: false
     default: 'true'
+  tiering:
+    description: "Enable tiered (disk-backed) storage while fuzzing to exercise the offload/fetch code paths."
+    required: false
+    default: 'false'
+  artifact-suffix:
+    description: "Suffix appended to uploaded artifact names to disambiguate matrix legs sharing a target (e.g. '-tiering')."
+    required: false
+    default: ''
 
 outputs:
   hang_count:
@@ -139,6 +147,7 @@ runs:
         # vocabulary, keeping the queue and memory bounded.
         AFL_CUSTOM_MUTATOR_ONLY: 1
         AFL_ENABLE_SAVE: ${{ inputs.mode == 'long' && '1' || '' }}
+        AFL_ENABLE_TIERING: ${{ inputs.tiering == 'true' && '1' || '' }}
         FUZZ_FOCUS_COMMANDS: ${{ inputs.focus-commands }}
 
     - name: Analyze fuzzing results
@@ -248,7 +257,7 @@ runs:
       if: failure() && steps.analyze.outputs.crash_count > 0
       uses: actions/upload-artifact@v4
       with:
-        name: fuzz-${{ inputs.mode }}-${{ inputs.target }}-crashes-${{ inputs.run-number }}
+        name: fuzz-${{ inputs.mode }}-${{ inputs.target }}-crashes-${{ inputs.run-number }}${{ inputs.artifact-suffix }}
         path: |
           fuzz/packaged/*.tar.gz
           fuzz/artifacts/${{ inputs.target }}/default/fuzzer_stats
@@ -277,7 +286,7 @@ runs:
       if: failure() && steps.analyze.outputs.hang_count > 0
       uses: actions/upload-artifact@v4
       with:
-        name: fuzz-${{ inputs.mode }}-${{ inputs.target }}-hangs-${{ inputs.run-number }}
+        name: fuzz-${{ inputs.mode }}-${{ inputs.target }}-hangs-${{ inputs.run-number }}${{ inputs.artifact-suffix }}
         path: |
           fuzz/packaged_hangs/*.tar.gz
           fuzz/artifacts/${{ inputs.target }}/default/fuzzer_stats
