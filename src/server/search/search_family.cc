@@ -2395,7 +2395,7 @@ bool RunHybridSearch(string_view index_name, HybridSearchParams* params, Command
   std::once_flag schema_validated;
   bool vsim_not_vector = false;
   bool vsim_dim_mismatch = false;
-  size_t vsim_query_dim = 0, vsim_index_dim = 0;
+  size_t vsim_query_dim = 0, vsim_index_dim = 0, vsim_width = sizeof(float);
   search::VectorSimilarity captured_metric = search::VectorSimilarity::L2;
 
   vector<SearchResult> text_docs(shard_count);
@@ -2424,7 +2424,7 @@ bool RunHybridSearch(string_view index_name, HybridSearchParams* params, Command
       captured_metric = vp.sim;
       if (!use_hnsw) {
         auto vec_bytes = params->query_params[params->vsim_param];
-        const size_t vsim_width = search::ElementSize(vp.data_type);
+        vsim_width = search::ElementSize(vp.data_type);
         if (!vec_bytes.empty() && vec_bytes.size() != vp.dim * vsim_width) {
           vsim_dim_mismatch = true;
           vsim_index_dim = vp.dim;
@@ -2479,9 +2479,9 @@ bool RunHybridSearch(string_view index_name, HybridSearchParams* params, Command
     return false;
   }
   if (vsim_dim_mismatch) {
-    rb->SendError(absl::StrCat("Query vector blob size (", vsim_query_dim * sizeof(float),
+    rb->SendError(absl::StrCat("Query vector blob size (", vsim_query_dim * vsim_width,
                                ") does not match index's expected size (",
-                               vsim_index_dim * sizeof(float), ")"));
+                               vsim_index_dim * vsim_width, ")"));
     return false;
   }
 
