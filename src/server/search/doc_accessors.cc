@@ -290,10 +290,6 @@ std::optional<BaseAccessor::StringList> JsonAccessor::GetStrings(std::string_vie
 
 std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(
     string_view active_field, size_t dim, search::VectorDataType dtype) const {
-  // Native (non-float32) JSON vector encoding is not yet supported; leave such docs unindexed.
-  if (dtype != search::VectorDataType::FLOAT32)
-    return std::nullopt;
-
   auto* path = GetPath(active_field);
   if (!path)
     return VectorInfo{};
@@ -310,17 +306,51 @@ std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(
   if (size != dim)
     return std::nullopt;
 
-  auto ptr = make_unique<float[]>(size);
+  // JSON stores numbers, so quantize/encode each element to the field's declared native width.
+  const size_t width = search::ElementSize(dtype);
+  auto bytes = make_unique<std::byte[]>(size * width);
 
   size_t i = 0;
   for (const auto& v : res[0].array_range()) {
-    if (!v.is_number()) {
+    if (!v.is_number())
       return std::nullopt;
+    std::byte* dst = bytes.get() + i * width;
+    switch (dtype) {
+      case search::VectorDataType::FLOAT32: {
+        float x = v.as<float>();
+        memcpy(dst, &x, sizeof(x));
+        break;
+      }
+      case search::VectorDataType::FLOAT64: {
+        double x = v.as<double>();
+        memcpy(dst, &x, sizeof(x));
+        break;
+      }
+      case search::VectorDataType::FLOAT16: {
+        uint16_t x = search::FloatToHalf(v.as<float>());
+        memcpy(dst, &x, sizeof(x));
+        break;
+      }
+      case search::VectorDataType::BFLOAT16: {
+        uint16_t x = search::FloatToBf16(v.as<float>());
+        memcpy(dst, &x, sizeof(x));
+        break;
+      }
+      case search::VectorDataType::INT8: {
+        auto x = static_cast<int8_t>(v.as<double>());
+        memcpy(dst, &x, sizeof(x));
+        break;
+      }
+      case search::VectorDataType::UINT8: {
+        auto x = static_cast<uint8_t>(v.as<double>());
+        memcpy(dst, &x, sizeof(x));
+        break;
+      }
     }
-    ptr[i++] = v.as<float>();
+    i++;
   }
 
-  return search::OwnedFtVector{std::move(ptr), size};
+  return search::OwnedFtVector{std::move(bytes), size};
 }
 
 std::optional<BaseAccessor::NumsList> JsonAccessor::GetNumbers(string_view active_field) const {

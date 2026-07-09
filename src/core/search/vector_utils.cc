@@ -29,11 +29,9 @@ namespace {
 #endif
 
 OwnedFtVector ConvertToFtVector(string_view value) {
-  // Value cannot be casted directly as it might be not aligned as a float (4 bytes).
-  // Misaligned memory access is UB.
   size_t size = value.size() / sizeof(float);
-  auto out = make_unique<float[]>(size);
-  memcpy(out.get(), value.data(), size * sizeof(float));
+  auto out = make_unique<std::byte[]>(value.size());
+  memcpy(out.get(), value.data(), value.size());
 
   return OwnedFtVector{std::move(out), size};
 }
@@ -146,6 +144,49 @@ float Bf16ToFloat(uint16_t b) {
   float out;
   memcpy(&out, &bits, sizeof(out));
   return out;
+}
+
+uint16_t FloatToHalf(float f) {
+  uint32_t x;
+  memcpy(&x, &f, sizeof(x));
+  const uint32_t sign = (x >> 16) & 0x8000;
+  const uint32_t exp_field = (x >> 23) & 0xFF;
+  uint32_t mant = x & 0x7FFFFF;
+
+  if (exp_field == 0xFF)  // inf / nan
+    return static_cast<uint16_t>(sign | 0x7C00 | (mant ? 0x200 : 0));
+
+  int32_t exp = static_cast<int32_t>(exp_field) - 127 + 15;
+  if (exp >= 0x1F)  // overflow -> inf
+    return static_cast<uint16_t>(sign | 0x7C00);
+
+  if (exp <= 0) {  // subnormal or zero
+    if (exp < -10)
+      return static_cast<uint16_t>(sign);
+    mant |= 0x800000;
+    const int shift = 14 - exp;
+    uint32_t half_mant = mant >> shift;
+    const uint32_t remainder = mant & ((1u << shift) - 1);
+    const uint32_t halfway = 1u << (shift - 1);
+    if (remainder > halfway || (remainder == halfway && (half_mant & 1)))
+      half_mant++;
+    return static_cast<uint16_t>(sign | half_mant);
+  }
+
+  uint16_t half = static_cast<uint16_t>(sign | (static_cast<uint32_t>(exp) << 10) | (mant >> 13));
+  const uint32_t remainder = mant & 0x1FFF;  // round to nearest even
+  if (remainder > 0x1000 || (remainder == 0x1000 && (half & 1)))
+    half++;
+  return half;
+}
+
+uint16_t FloatToBf16(float f) {
+  uint32_t bits;
+  memcpy(&bits, &f, sizeof(bits));
+  if ((bits & 0x7FFFFFFF) > 0x7F800000)  // nan -> quiet nan
+    return static_cast<uint16_t>((bits >> 16) | 0x0040);
+  bits += 0x7FFF + ((bits >> 16) & 1);  // round to nearest even
+  return static_cast<uint16_t>(bits >> 16);
 }
 
 namespace {

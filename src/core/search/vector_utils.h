@@ -31,6 +31,10 @@ float VectorDistance(const void* u, const void* v, size_t dims, VectorSimilarity
 float HalfToFloat(uint16_t h);
 float Bf16ToFloat(uint16_t b);
 
+// Narrow a float to half precision (round to nearest even). Used to encode JSON numbers.
+uint16_t FloatToHalf(float f);
+uint16_t FloatToBf16(float f);
+
 std::string_view VectorSimilarityToString(VectorSimilarity sim);
 
 std::string_view VectorDataTypeToString(VectorDataType dt);

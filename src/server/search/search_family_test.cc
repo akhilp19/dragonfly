@@ -1417,6 +1417,48 @@ TEST_F(SearchFamilyTest, HnswKnnFloat16) {
   EXPECT_THAT(resp, MatchEntry("d:a", "dist", "0"));
 }
 
+TEST_F(SearchFamilyTest, JsonKnnInt8) {
+  Run({"FT.CREATE", "idx",  "ON",  "JSON", "PREFIX",          "1",    "d:",
+       "SCHEMA",    "$.v",  "AS",  "v",    "VECTOR",          "FLAT", "6",
+       "TYPE",      "INT8", "DIM", "3",    "DISTANCE_METRIC", "L2"});
+  WaitForIndexReady("idx");
+
+  Run({"JSON.SET", "d:a", "$", R"({"v":[1,2,3]})"});
+  Run({"JSON.SET", "d:b", "$", R"({"v":[40,50,60]})"});
+
+  auto Int8Vec = [](std::initializer_list<int> vals) {
+    string s;
+    for (int v : vals)
+      s.push_back(static_cast<char>(static_cast<int8_t>(v)));
+    return s;
+  };
+  const string q = Int8Vec({1, 2, 3});
+  auto resp = Run({"FT.SEARCH", "idx", "*=>[KNN 1 @v $q AS dist]", "RETURN", "1", "dist", "PARAMS",
+                   "2", "q", q, "DIALECT", "2"});
+  EXPECT_THAT(resp, MatchEntry("d:a", "dist", "0"));
+}
+
+TEST_F(SearchFamilyTest, JsonKnnFloat16) {
+  Run({"FT.CREATE", "idx",     "ON",  "JSON", "PREFIX",          "1",    "d:",
+       "SCHEMA",    "$.v",     "AS",  "v",    "VECTOR",          "FLAT", "6",
+       "TYPE",      "FLOAT16", "DIM", "3",    "DISTANCE_METRIC", "L2"});
+  WaitForIndexReady("idx");
+
+  Run({"JSON.SET", "d:a", "$", R"({"v":[1,2,3]})"});
+  Run({"JSON.SET", "d:b", "$", R"({"v":[4,5,6]})"});
+
+  auto F16 = [](std::initializer_list<uint16_t> vals) {
+    string s;
+    for (uint16_t v : vals)
+      s.append(reinterpret_cast<const char*>(&v), sizeof(v));
+    return s;
+  };
+  const string q = F16({0x3C00, 0x4000, 0x4200});  // 1, 2, 3
+  auto resp = Run({"FT.SEARCH", "idx", "*=>[KNN 1 @v $q AS dist]", "RETURN", "1", "dist", "PARAMS",
+                   "2", "q", q, "DIALECT", "2"});
+  EXPECT_THAT(resp, MatchEntry("d:a", "dist", "0"));
+}
+
 TEST_F(SearchFamilyTest, HashHnswKnnReturnsImplicitVectorScore) {
   Run({"FT.CREATE", "idx",  "ON", "HASH", "PREFIX",  "1",   "d:", "SCHEMA",          "v",
        "VECTOR",    "HNSW", "8",  "TYPE", "FLOAT32", "DIM", "3",  "DISTANCE_METRIC", "L2",

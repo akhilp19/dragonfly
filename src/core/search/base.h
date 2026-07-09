@@ -8,6 +8,7 @@
 #include <absl/container/flat_hash_set.h>
 #include <absl/container/inlined_vector.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -58,7 +59,8 @@ constexpr size_t ElementSize(VectorDataType dt) {
   return 4;
 }
 
-using OwnedFtVector = std::pair<std::unique_ptr<float[]>, size_t /* dimension (size) */>;
+// Owns a vector's native-width bytes (int8=1B/elem, fp16=2B, fp32=4B, ...); second is elem count.
+using OwnedFtVector = std::pair<std::unique_ptr<std::byte[]>, size_t /* dimension (size) */>;
 using BorrowedFtVector = const char*;
 
 // Query params represent named parameters for queries supplied via PARAMS.

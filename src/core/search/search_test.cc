@@ -2119,6 +2119,13 @@ TEST_F(SearchTest, VectorDistanceTypedDtypes) {
   EXPECT_FLOAT_EQ(Bf16ToFloat(0x4000), 2.0f);
   EXPECT_FLOAT_EQ(Bf16ToFloat(0x40C0), 6.0f);
 
+  // Encoders (float -> half), exact for representable values and round-trip.
+  EXPECT_EQ(FloatToHalf(1.0f), 0x3C00);
+  EXPECT_EQ(FloatToHalf(-2.0f), 0xC000);
+  EXPECT_EQ(FloatToBf16(1.0f), 0x3F80);
+  for (float x : {0.0f, 1.0f, -3.5f, 42.0f, 0.25f})
+    EXPECT_FLOAT_EQ(HalfToFloat(FloatToHalf(x)), x);
+
   // Every dtype holding {1,2,3} vs {4,5,6} must match the float32 reference under all metrics
   // (integers 1..6 are exactly representable in all six dtypes).
   const std::vector<float> f1 = {1.0f, 2.0f, 3.0f};

@@ -162,8 +162,8 @@ struct AstTagsNode {
 // Applies nearest neighbor search to the final result set
 struct AstKnnNode {
   AstKnnNode() = default;
-  AstKnnNode(uint32_t limit, std::string_view field, OwnedFtVector vec, std::string blob,
-             std::string_view score_alias, std::optional<uint32_t> ef_runtime);
+  AstKnnNode(uint32_t limit, std::string_view field, std::string blob, std::string_view score_alias,
+             std::optional<uint32_t> ef_runtime);
 
   AstKnnNode(AstNode&& sub, AstKnnNode&& self);
 
@@ -180,7 +180,6 @@ struct AstKnnNode {
   std::unique_ptr<AstNode> filter;
   size_t limit;
   std::string field;
-  OwnedFtVector vec;
   std::string blob;  // raw query-vector bytes, decoded at search time using the field dtype
   std::string score_alias;
   std::optional<uint32_t> ef_runtime;
@@ -191,8 +190,8 @@ struct AstKnnNode {
 // Applies vector range search: returns all docs with distance(vec, doc_vec) <= radius
 struct AstVectorRangeNode {
   AstVectorRangeNode() = default;
-  AstVectorRangeNode(std::string field, double radius, OwnedFtVector vec, std::string blob,
-                     std::string score_alias, std::optional<double> epsilon);
+  AstVectorRangeNode(std::string field, double radius, std::string blob, std::string score_alias,
+                     std::optional<double> epsilon);
 
   AstVectorRangeNode(const AstVectorRangeNode&) = delete;
   AstVectorRangeNode& operator=(const AstVectorRangeNode&) = delete;
@@ -206,7 +205,6 @@ struct AstVectorRangeNode {
 
   std::string field;
   double radius;
-  OwnedFtVector vec;
   std::string blob;  // raw query-vector bytes, decoded at search time using the field dtype
   std::string score_alias;
   std::optional<double> epsilon;
