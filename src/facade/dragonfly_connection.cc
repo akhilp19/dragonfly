@@ -34,6 +34,7 @@
 #include "facade/resp_srv_parser.h"
 #include "facade/service_interface.h"
 #include "facade/socket_utils.h"
+#include "facade/tracy_support.h"
 #include "io/file.h"
 #include "strings/human_readable.h"
 #include "util/fiber_socket_base.h"
@@ -1547,6 +1548,9 @@ Connection::ParserStatus Connection::ParseRedis(base::IoBuf& io_buf, uint32_t ma
 }
 
 auto Connection::ParseLoop() -> ParserStatus {
+  // NOTE: shared by the V1 IoLoop and V2 IoLoopV2; profiled under the "V2." namespace because Tracy
+  // is only ever enabled while benchmarking the V2 path.
+  DFLY_TRACY_ZONE("V2.ParseLoop");
   auto parse_func =
       protocol_ == Protocol::MEMCACHE ? &Connection::ParseMCBatch : &Connection::ParseRedisBatch;
 
@@ -1554,7 +1558,10 @@ auto Connection::ParseLoop() -> ParserStatus {
 
   do {
     DCHECK_GT(io_buf_.InputLen(), 0u);
-    parse_status = (this->*parse_func)(io_buf_);
+    {
+      DFLY_TRACY_ZONE("V2.Parse");  // protocol parsing cost only
+      parse_status = (this->*parse_func)(io_buf_);
+    }
 
     // V2 large-batch prioritization (pipeline_prioritize_large_batches):
     // - When a real pipeline is forming (>1 queued) and more socket data is expected
@@ -2754,6 +2761,7 @@ bool Connection::SquashPipelineV2() {
 }
 
 bool Connection::ExecuteBatch() {
+  DFLY_TRACY_ZONE("V2.ExecuteBatch");
   // Invariant: batched_ must be false on entry.
   // Both ReplyBatch() and ExecuteBatch() reset it via absl::Cleanup guards on all return paths.
   DCHECK(!reply_builder_->IsBatchMode());
@@ -2799,7 +2807,12 @@ bool Connection::ExecuteBatch() {
       DVLOG(2) << CONN_ID << "Squashing pipeline " << dispatch_waiting_count_ << " commands "
                << pending_input_ << " " << io_buf_.InputLen();
 
-      if (SquashPipelineV2()) {
+      bool squashed;
+      {
+        DFLY_TRACY_ZONE("V2.Squash");
+        squashed = SquashPipelineV2();
+      }
+      if (squashed) {
         // - This helps with throughput. Explanation:
         //   when we suspend the thread calls io-callbacks that fill up the input buffer.
         //   By breaking now we give the io-loop a chance to add more commands to the pipeline.
@@ -2861,7 +2874,14 @@ bool Connection::ExecuteBatch() {
       cc_->async_dispatch = is_true_pipeline;
     }
     uint64_t dispatch_start = CycleClock::Now();
-    auto dispatch_res = service_->DispatchCommandSimple(cmd, mode);
+    DispatchResult dispatch_res = DispatchResult::OK;
+    {
+      DFLY_TRACY_ZONE("V2.Dispatch");
+      // Attach the command verb (GET/SET/...) so the trace shows per-command execution cost.
+      if (cmd->size() > 0)
+        DFLY_TRACY_ZONE_TEXT_SV(cmd->Front());
+      dispatch_res = service_->DispatchCommandSimple(cmd, mode);
+    }
     if (ioloop_v2_) {
       cc_->sync_dispatch = false;
       cc_->async_dispatch = false;
@@ -2902,6 +2922,7 @@ bool Connection::ExecuteBatch() {
 }
 
 bool Connection::ReplyBatch() {
+  DFLY_TRACY_ZONE("V2.ReplyBatch");
   ConnectionMemoryTracker memory_tracker(this);
   reply_builder_->SetBatchMode(true);
   absl::Cleanup batch_guard = [this] { reply_builder_->SetBatchMode(false); };
@@ -2931,7 +2952,10 @@ bool Connection::ReplyBatch() {
         fiber_park_spot_ = FiberParkSpot::kSendReply;
       }
 
-      cmd->SendReply();
+      {
+        DFLY_TRACY_ZONE("V2.SendReply");
+        cmd->SendReply();
+      }
       fiber_park_spot_ = FiberParkSpot::kNone;
       replied++;
 
@@ -3366,6 +3390,10 @@ bool Connection::DrainControlPath(uint32_t quota) {
 }
 
 Connection::ParserStatus Connection::RunParsePath() {
+  DFLY_TRACY_ZONE("V2.RunParsePath");
+  // Pipeline depth over time - shows whether batches are forming as expected. Tracy plots are keyed
+  // by name, so this aggregates across all connections sharing this proactor thread.
+  DFLY_TRACY_PLOT("v2.parsed_q_len", int64_t(parsed_cmd_q_len_));
   // We have input data AND memory budget - parse new commands, execute, reply.
   size_t mem_before = GetLocalConnStats().pipeline_queue_bytes;
   ParserStatus parse_status = ParseLoop();
@@ -3470,7 +3498,10 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
       current_wait_.emplace(parsed_head_, &cmd_completion_waiter);
     }
 
-    ReadPendingInput();
+    {
+      DFLY_TRACY_ZONE("V2.ReadInput");
+      ReadPendingInput();
+    }
 
     // Idle park: flush and sleep only when the fiber is truly idle (ShouldWakeIdle() is false).
     // When synchronous commands (e.g. PUBLISH) are pipelined, ExecuteBatch processes them
@@ -3481,8 +3512,11 @@ variant<error_code, Connection::ParserStatus> Connection::IoLoopV2() {
 
       // Flush replies deferred by ReplyBatch before sleeping - ensures the client gets its response
       // even when no more data arrives (single commands, end of pipeline).
-      if (auto ec = FlushReplies(); ec) {
-        return ec;
+      {
+        DFLY_TRACY_ZONE("V2.Flush");  // sendmsg / socket write cost
+        if (auto ec = FlushReplies(); ec) {
+          return ec;
+        }
       }
 
       // Count this idle-await park. When HasInFlightCommands() is true the fiber is sleeping
