@@ -467,7 +467,8 @@ HnswVectorIndex::~HnswVectorIndex() {
 }
 
 bool HnswVectorIndex::Add(GlobalDocId id, const DocumentAccessor& doc, std::string_view field) {
-  auto vector_ptr = doc.GetVector(field, dim_);
+  // HNSW currently stores float32 only; native-width HNSW storage is a follow-up.
+  auto vector_ptr = doc.GetVector(field, dim_, VectorDataType::FLOAT32);
 
   if (!vector_ptr) {
     return false;
@@ -536,7 +537,8 @@ bool HnswVectorIndex::RestoreFromNodes(const std::vector<HnswNodeData>& nodes,
 
 bool HnswVectorIndex::UpdateVectorData(GlobalDocId id, const DocumentAccessor& doc,
                                        std::string_view field) {
-  auto vector_ptr = doc.GetVector(field, dim_);
+  // HNSW currently stores float32 only; native-width HNSW storage is a follow-up.
+  auto vector_ptr = doc.GetVector(field, dim_, VectorDataType::FLOAT32);
   if (!vector_ptr ||
       *vector_ptr == search::DocumentAccessor::VectorInfo(search::BorrowedFtVector(nullptr))) {
     // Document doesn't have the vector field - mark node as deleted to prevent

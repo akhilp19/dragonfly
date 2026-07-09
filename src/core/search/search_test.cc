@@ -67,7 +67,8 @@ struct MockedDocument : public DocumentAccessor {
     return GetStrings(field);
   }
 
-  std::optional<VectorInfo> GetVector(string_view field, size_t dim) const override {
+  std::optional<VectorInfo> GetVector(string_view field, size_t dim,
+                                      VectorDataType dtype) const override {
     auto strings_list = GetStrings(field);
     if (!strings_list)
       return std::nullopt;
@@ -1440,7 +1441,7 @@ TEST(HnswBorrowedMode, DanglingPointerAfterRemove) {
     const char* data;
     explicit BorrowedDoc(const char* d) : data(d) {
     }
-    std::optional<VectorInfo> GetVector(string_view, size_t) const override {
+    std::optional<VectorInfo> GetVector(string_view, size_t, VectorDataType) const override {
       return BorrowedFtVector{data};
     }
     std::optional<StringList> GetStrings(string_view) const override {

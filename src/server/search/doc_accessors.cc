@@ -112,13 +112,14 @@ SearchDocData BaseAccessor::Serialize(const search::Schema& schema,
   return out;
 }
 
-std::optional<BaseAccessor::VectorInfo> BaseAccessor::GetVector(std::string_view active_field,
-                                                                size_t dim) const {
+std::optional<BaseAccessor::VectorInfo> BaseAccessor::GetVector(
+    std::string_view active_field, size_t dim, search::VectorDataType dtype) const {
   auto strings_list = GetStrings(active_field);
   if (strings_list) {
     if (!strings_list->empty()) {
       auto value = strings_list->front();
-      if ((value.size() % sizeof(float)) || (value.size() / sizeof(float) != dim)) {
+      const size_t width = search::ElementSize(dtype);
+      if ((value.size() % width) || (value.size() / width != dim)) {
         return std::nullopt;
       }
       return value.data();
@@ -287,8 +288,12 @@ std::optional<BaseAccessor::StringList> JsonAccessor::GetStrings(std::string_vie
   return out;
 }
 
-std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(string_view active_field,
-                                                                size_t dim) const {
+std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(
+    string_view active_field, size_t dim, search::VectorDataType dtype) const {
+  // Native (non-float32) JSON vector encoding is not yet supported; leave such docs unindexed.
+  if (dtype != search::VectorDataType::FLOAT32)
+    return std::nullopt;
+
   auto* path = GetPath(active_field);
   if (!path)
     return VectorInfo{};

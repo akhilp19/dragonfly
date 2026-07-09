@@ -102,7 +102,8 @@ struct DocumentAccessor {
   virtual std::optional<StringList> GetStrings(std::string_view active_field) const = 0;
 
   /* Returns nullopt if the specified field is not a vector */
-  virtual std::optional<VectorInfo> GetVector(std::string_view active_field, size_t dim) const = 0;
+  virtual std::optional<VectorInfo> GetVector(std::string_view active_field, size_t dim,
+                                              VectorDataType dtype) const = 0;
 
   /* Return nullopt if the specified field is not a list of doubles */
   virtual std::optional<NumsList> GetNumbers(std::string_view active_field) const = 0;
