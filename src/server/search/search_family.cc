@@ -121,7 +121,10 @@ search::SchemaField::VectorParams ParseVectorParams(CmdArgParser* parser) {
     } else if (parser->Check("M", &params.hnsw_m)) {
     } else if (parser->Check("EF_CONSTRUCTION", &params.hnsw_ef_construction)) {
     } else if (parser->Check("TYPE")) {
-      params.data_type = parser->Next<Upper>();
+      if (auto dt = search::ParseVectorDataType(parser->Next<Upper>()); dt)
+        params.data_type = *dt;
+      else
+        parser->ReportCustom("Not supported data type is given");
     } else if (parser->Check("EF_RUNTIME", &params.hnsw_ef_runtime)) {
     } else if (parser->Check("EPSILON")) {
       double epsilon = parser->Next<double>("Invalid EPSILON value");
@@ -2876,7 +2879,7 @@ void CmdFtInfo(CmdArgParser parser, CommandContext* cmd_cntx) {
       info.emplace_back("algorithm");
       info.emplace_back(vparams.use_hnsw ? "HNSW" : "FLAT");
       info.emplace_back("data_type");
-      info.emplace_back(vparams.data_type);
+      info.emplace_back(search::VectorDataTypeToString(vparams.data_type));
       info.emplace_back("dim");
       info.emplace_back(std::to_string(vparams.dim));
       info.emplace_back("distance_metric");

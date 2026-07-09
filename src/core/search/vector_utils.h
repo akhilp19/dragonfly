@@ -22,7 +22,21 @@ float IPDistance(const float* u, const float* v, size_t dims);
 float CosineDistance(const float* u, const float* v, size_t dims);
 float VectorDistance(const float* u, const float* v, size_t dims, VectorSimilarity sim);
 
+// Distance between two native-width vector blobs of the given dtype. Elements are widened to
+// float (double for FLOAT64) before the metric is applied, matching the reference engine.
+float VectorDistance(const void* u, const void* v, size_t dims, VectorSimilarity sim,
+                     VectorDataType dt);
+
+// Widen a single half-precision element to float. Byte-safe for unaligned input.
+float HalfToFloat(uint16_t h);
+float Bf16ToFloat(uint16_t b);
+
 std::string_view VectorSimilarityToString(VectorSimilarity sim);
+
+std::string_view VectorDataTypeToString(VectorDataType dt);
+
+// Parses a vector TYPE token (e.g. "INT8"); std::nullopt if not a supported type.
+std::optional<VectorDataType> ParseVectorDataType(std::string_view name);
 
 // L2: 1/(1+d*d) -- knn_dist is raw L2 here, so squaring matches the 1/(1+L2_sq) similarity.
 // IP/COSINE: (2-d)/2 -- knn_dist is (1 - score) for both metrics.
