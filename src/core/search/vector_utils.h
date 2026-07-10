@@ -35,6 +35,9 @@ float Bf16ToFloat(uint16_t b);
 uint16_t FloatToHalf(float f);
 uint16_t FloatToBf16(float f);
 
+// Builds a `dim`-element blob with every element set to 1.0 encoded in the given dtype.
+std::vector<std::byte> EncodeOnesVector(size_t dim, VectorDataType dt);
+
 std::string_view VectorSimilarityToString(VectorSimilarity sim);
 
 std::string_view VectorDataTypeToString(VectorDataType dt);

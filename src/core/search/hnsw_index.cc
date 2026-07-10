@@ -71,7 +71,7 @@ struct HnswlibAdapter {
         ef_runtime_{params.hnsw_ef_runtime},
         epsilon_{params.hnsw_epsilon},
         data_size_{params.dim * ElementSize(params.data_type)},
-        stub_vector_(data_size_, std::byte{1}) {
+        stub_vector_(EncodeOnesVector(params.dim, params.data_type)) {
   }
 
   void Add(const void* data, GlobalDocId id) {
@@ -219,8 +219,8 @@ struct HnswlibAdapter {
     // In borrowed mode the node stays in the graph after markDelete and
     // traversal still computes distances for it.  Replace the external
     // pointer with stub_vector_ so the caller can free the original data.
-    // Uses 1.0f (not zero) because CosineDistance(v, 0) = 0 would bias
-    // traversal toward deleted nodes.
+    // Uses a native-encoded 1.0 (not zero) because a zero-norm vector yields
+    // cosine distance 0 and would bias traversal toward deleted nodes.
     if (it != world_.label_lookup_.end()) {
       const char* safe_ptr = reinterpret_cast<const char*>(stub_vector_.data());
       char* ptr_location = world_.getDataPtrByInternalId(it->second);
@@ -442,7 +442,7 @@ struct HnswlibAdapter {
   uint32_t ef_runtime_;                 // Default runtime search breadth.
   double epsilon_;                      // Default range-search overscan.
   size_t data_size_;                    // Byte size of a single vector.
-  std::vector<std::byte> stub_vector_;  // Non-zero data for deleted nodes in borrowed mode.
+  std::vector<std::byte> stub_vector_;  // Native 1.0 data for deleted nodes in borrowed mode.
 };
 
 HnswVectorIndex::HnswVectorIndex(const SchemaField::VectorParams& params, bool copy_vector,

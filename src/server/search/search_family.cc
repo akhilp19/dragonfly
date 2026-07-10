@@ -44,6 +44,7 @@
 #include "server/search/aggregator.h"
 #include "server/search/doc_index.h"
 #include "server/search/global_hnsw_index.h"
+#include "server/server_state.h"
 #include "server/transaction.h"
 #include "src/core/overloaded.h"
 
@@ -123,6 +124,8 @@ search::SchemaField::VectorParams ParseVectorParams(CmdArgParser* parser) {
     } else if (parser->Check("TYPE")) {
       if (auto dt = search::ParseVectorDataType(parser->Next<Upper>()); dt)
         params.data_type = *dt;
+      else if (ServerState::tlocal()->gstate() == GlobalState::LOADING)
+        params.data_type = search::VectorDataType::FLOAT32;  // legacy snapshot: coerce unknown TYPE
       else
         parser->ReportCustom("Not supported data type is given");
     } else if (parser->Check("EF_RUNTIME", &params.hnsw_ef_runtime)) {
@@ -1471,6 +1474,17 @@ vector<SearchResult> LoadHnswSearchDocs(
   results[0].docs = std::move(knn_search_serialized_docs);
 
   return results;
+}
+
+// Validates that a KNN query blob matches the index's dim * element width. Returns an error
+// message on mismatch (mirrors the FLAT and FT.AGGREGATE paths), else nullopt.
+std::optional<std::string> ValidateHnswKnnBlob(const search::AstKnnNode* knn,
+                                               const search::HnswVectorIndex& index) {
+  size_t width = search::ElementSize(index.GetDataType());
+  if (knn->blob.size() != index.GetDim() * width)
+    return absl::StrCat("Wrong vector index dimensions, got: ", knn->blob.size() / width,
+                        ", expected: ", index.GetDim());
+  return std::nullopt;
 }
 
 std::vector<std::pair<float, search::GlobalDocId>> SearchHnswWithPrefilter(
@@ -3185,6 +3199,11 @@ void CmdFtSearch(CmdArgParser parser, CommandContext* cmd_cntx) {
         cmd_cntx->tx()->Conclude();
       return builder->SendError(string{index_name} + ": no such global hnsw index");
     }
+    if (auto err = ValidateHnswKnnBlob(knn, *hnsw_index)) {
+      if (knn_has_prefilter)
+        cmd_cntx->tx()->Conclude();
+      return builder->SendError(*err);
+    }
     if (knn_has_prefilter) {
       docs = SearchGlobalHnswIndex(knn, hnsw_index, index_name, search_algo.GetKnnScoreSortOption(),
                                    knn_prefilter_docs, *params, *cmd_cntx);
@@ -3394,6 +3413,8 @@ void CmdFtProfile(CmdArgParser parser, CommandContext* cmd_cntx) {
     auto hnsw_index = GlobalHnswIndexRegistry::Instance().Get(index_name, profile_knn->field);
     if (!hnsw_index)
       return rb->SendError(std::string{index_name} + ": no such global hnsw index");
+    if (auto err = ValidateHnswKnnBlob(profile_knn, *hnsw_index))
+      return rb->SendError(*err);
 
     std::vector<SearchResult> search_results(shards_count);
     std::vector<SearchResult> profile_search_results(shards_count);

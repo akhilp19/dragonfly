@@ -189,6 +189,41 @@ uint16_t FloatToBf16(float f) {
   return static_cast<uint16_t>(bits >> 16);
 }
 
+std::vector<std::byte> EncodeOnesVector(size_t dim, VectorDataType dt) {
+  const size_t width = ElementSize(dt);
+  std::byte elem[sizeof(double)] = {};
+  switch (dt) {
+    case VectorDataType::FLOAT32: {
+      float v = 1.0f;
+      memcpy(elem, &v, sizeof(v));
+    } break;
+    case VectorDataType::FLOAT64: {
+      double v = 1.0;
+      memcpy(elem, &v, sizeof(v));
+    } break;
+    case VectorDataType::FLOAT16: {
+      uint16_t v = FloatToHalf(1.0f);
+      memcpy(elem, &v, sizeof(v));
+    } break;
+    case VectorDataType::BFLOAT16: {
+      uint16_t v = FloatToBf16(1.0f);
+      memcpy(elem, &v, sizeof(v));
+    } break;
+    case VectorDataType::INT8: {
+      int8_t v = 1;
+      memcpy(elem, &v, sizeof(v));
+    } break;
+    case VectorDataType::UINT8: {
+      uint8_t v = 1;
+      memcpy(elem, &v, sizeof(v));
+    } break;
+  }
+  std::vector<std::byte> out(dim * width);
+  for (size_t i = 0; i < dim; i++)
+    memcpy(out.data() + i * width, elem, width);
+  return out;
+}
+
 namespace {
 
 uint16_t LoadU16(const void* base, size_t i) {
@@ -197,18 +232,32 @@ uint16_t LoadU16(const void* base, size_t i) {
   return v;
 }
 
+// Byte-safe reads: native-width blobs may be unaligned (borrowed keyspace storage), so a
+// typed deref would be UB. memcpy lowers to a single load on the target ISAs.
+float LoadF32(const void* base, size_t i) {
+  float v;
+  memcpy(&v, static_cast<const char*>(base) + i * sizeof(float), sizeof(v));
+  return v;
+}
+
+double LoadF64(const void* base, size_t i) {
+  double v;
+  memcpy(&v, static_cast<const char*>(base) + i * sizeof(double), sizeof(v));
+  return v;
+}
+
 // Reads element i of a native-width blob, widened to Acc (double for FLOAT64, else float).
 template <VectorDataType DT> struct Reader;
 template <> struct Reader<VectorDataType::FLOAT32> {
   using Acc = float;
   static float Get(const void* p, size_t i) {
-    return static_cast<const float*>(p)[i];
+    return LoadF32(p, i);
   }
 };
 template <> struct Reader<VectorDataType::FLOAT64> {
   using Acc = double;
   static double Get(const void* p, size_t i) {
-    return static_cast<const double*>(p)[i];
+    return LoadF64(p, i);
   }
 };
 template <> struct Reader<VectorDataType::FLOAT16> {

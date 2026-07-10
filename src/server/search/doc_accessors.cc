@@ -14,6 +14,8 @@
 #include <absl/strings/str_cat.h>
 #include <absl/strings/str_join.h>
 
+#include <cmath>
+
 #include "base/flags.h"
 #include "core/detail/listpack_wrap.h"
 #include "core/json/path.h"
@@ -337,12 +339,24 @@ std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(
         break;
       }
       case search::VectorDataType::INT8: {
-        auto x = static_cast<int8_t>(v.as<double>());
+        double d = v.as<double>();
+        if (!std::isfinite(d))
+          return std::nullopt;
+        long r = std::lround(d);  // round to nearest; reject out-of-range rather than wrap
+        if (r < -128 || r > 127)
+          return std::nullopt;
+        auto x = static_cast<int8_t>(r);
         memcpy(dst, &x, sizeof(x));
         break;
       }
       case search::VectorDataType::UINT8: {
-        auto x = static_cast<uint8_t>(v.as<double>());
+        double d = v.as<double>();
+        if (!std::isfinite(d))
+          return std::nullopt;
+        long r = std::lround(d);
+        if (r < 0 || r > 255)
+          return std::nullopt;
+        auto x = static_cast<uint8_t>(r);
         memcpy(dst, &x, sizeof(x));
         break;
       }

@@ -1459,6 +1459,78 @@ TEST_F(SearchFamilyTest, JsonKnnFloat16) {
   EXPECT_THAT(resp, MatchEntry("d:a", "dist", "0"));
 }
 
+TEST_F(SearchFamilyTest, HnswKnnWrongDimReturnsError) {
+  Run({"FT.CREATE", "idx", "ON", "HASH", "PREFIX", "1", "d:", "SCHEMA", "v", "VECTOR", "HNSW", "6",
+       "TYPE", "FLOAT32", "DIM", "3", "DISTANCE_METRIC", "L2"});
+  WaitForIndexReady("idx");
+
+  auto F32 = [](std::initializer_list<float> vals) {
+    string s;
+    for (float v : vals)
+      s.append(reinterpret_cast<const char*>(&v), sizeof(v));
+    return s;
+  };
+  Run({"HSET", "d:a", "v", F32({1, 2, 3})});
+
+  // Query blob carries 2 elements, index expects 3 -> explicit error, not a silent empty result.
+  const string q = F32({1, 2});
+  auto resp =
+      Run({"FT.SEARCH", "idx", "*=>[KNN 1 @v $q AS dist]", "PARAMS", "2", "q", q, "DIALECT", "2"});
+  EXPECT_THAT(resp, ErrArg("Wrong vector index dimensions"));
+}
+
+TEST_F(SearchFamilyTest, JsonKnnInt8OutOfRange) {
+  Run({"FT.CREATE", "idx",  "ON",  "JSON", "PREFIX",          "1",    "d:",
+       "SCHEMA",    "$.v",  "AS",  "v",    "VECTOR",          "FLAT", "6",
+       "TYPE",      "INT8", "DIM", "3",    "DISTANCE_METRIC", "L2"});
+  WaitForIndexReady("idx");
+
+  Run({"JSON.SET", "d:ok", "$", R"({"v":[1,2,3]})"});
+  Run({"JSON.SET", "d:round", "$", R"({"v":[1,2,3.4]})"});  // 3.4 rounds to 3
+  Run({"JSON.SET", "d:hi", "$", R"({"v":[1,2,999]})"});     // out of int8 range -> doc skipped
+  Run({"JSON.SET", "d:lo", "$", R"({"v":[1,2,-200]})"});    // out of int8 range -> doc skipped
+
+  // Only the two in-range docs are indexed; the out-of-range ones are dropped (not wrapped).
+  EXPECT_THAT(Run({"FT.SEARCH", "idx", "*"}), AreDocIds("d:ok", "d:round"));
+
+  // 3.4 rounded to 3, so d:round matches the [1,2,3] query exactly (distance 0).
+  Run({"JSON.DEL", "d:ok"});
+  auto Int8Vec = [](std::initializer_list<int> vals) {
+    string s;
+    for (int v : vals)
+      s.push_back(static_cast<char>(static_cast<int8_t>(v)));
+    return s;
+  };
+  const string q = Int8Vec({1, 2, 3});
+  auto resp = Run({"FT.SEARCH", "idx", "*=>[KNN 1 @v $q AS dist]", "RETURN", "1", "dist", "PARAMS",
+                   "2", "q", q, "DIALECT", "2"});
+  EXPECT_THAT(resp, MatchEntry("d:round", "dist", "0"));
+}
+
+TEST_F(SearchFamilyTest, HnswKnnFloat64LargeDim) {
+  // dim*8 = 2048 bytes exceeds the listpack threshold -> borrowed keyspace storage, whose sds
+  // data pointer is unaligned. Exercises the memcpy-based FLOAT64 reader (would trip
+  // -fsanitize=alignment before the byte-safe-load fix).
+  const int kDim = 256;
+  Run({"FT.CREATE", "idx", "ON", "HASH", "PREFIX", "1", "d:", "SCHEMA", "v", "VECTOR", "HNSW", "6",
+       "TYPE", "FLOAT64", "DIM", absl::StrCat(kDim), "DISTANCE_METRIC", "L2"});
+  WaitForIndexReady("idx");
+
+  auto F64 = [](double fill, int dim) {
+    string s;
+    for (int i = 0; i < dim; i++)
+      s.append(reinterpret_cast<const char*>(&fill), sizeof(fill));
+    return s;
+  };
+  Run({"HSET", "d:a", "v", F64(1.0, kDim)});
+  Run({"HSET", "d:b", "v", F64(5.0, kDim)});
+
+  const string q = F64(1.0, kDim);
+  auto resp = Run({"FT.SEARCH", "idx", "*=>[KNN 1 @v $q AS dist]", "RETURN", "1", "dist", "PARAMS",
+                   "2", "q", q, "DIALECT", "2"});
+  EXPECT_THAT(resp, MatchEntry("d:a", "dist", "0"));
+}
+
 TEST_F(SearchFamilyTest, HashHnswKnnReturnsImplicitVectorScore) {
   Run({"FT.CREATE", "idx",  "ON", "HASH", "PREFIX",  "1",   "d:", "SCHEMA",          "v",
        "VECTOR",    "HNSW", "8",  "TYPE", "FLOAT32", "DIM", "3",  "DISTANCE_METRIC", "L2",
