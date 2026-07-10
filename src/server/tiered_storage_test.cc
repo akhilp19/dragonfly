@@ -72,6 +72,16 @@ class TieredStorageTest : public BaseFamilyTest {
   void UpdateFromFlags() {
     pp_->at(0)->AwaitBrief([] { EngineShard::tlocal()->tiered_storage()->UpdateFromFlags(); });
   }
+
+  // A single huge PFADD stays sparse and too small to offload; batch to force dense.
+  void BuildDenseHll(string_view key) {
+    for (int base = 0; base < 6000; base += 100) {
+      vector<string> add = {"PFADD", string(key)};
+      for (int i = base; i < base + 100; ++i)
+        add.push_back(absl::StrCat(key, ":", i));
+      Run(absl::MakeSpan(add));
+    }
+  }
 };
 
 // Test that should run with both modes of "cooling"
@@ -231,6 +241,55 @@ TEST_P(LatentCoolingTSTest, MGET) {
   auto elements = resp.GetVec();
   for (size_t i = 0; i < elements.size(); i++)
     EXPECT_EQ(elements[i], values[i]);
+}
+
+// Test that squashed GET/MGET commands over offloaded values run their disk reads concurrently.
+TEST_F(PureDiskTSTest, MGETParallel) {
+  // Create kMax strings and offload them. Each value fills its own page so each key maps to a
+  // distinct pending read, making concurrent reads observable via pending_read_cnt.
+  const int kMax = 200;
+  std::string value(3000, 'c');
+  for (int i = 0; i < kMax; i++)
+    Run({"SET", absl::StrCat("key:", i), value});
+  ExpectConditionWithinTimeout([this] { return GetMetrics().tiered_stats.total_stashes >= kMax; });
+
+  // Build a batch of GET/MGET commands of varying widths
+  vector<vector<string>> cmds;
+  for (int i = 0; i < 200; i++) {
+    int width = 1 + (i * 7) % 13;  // 1..13 keys
+    vector<string> cmd = {width == 1 ? "GET" : "MGET"};
+    for (int j = 0; j < width; j++)
+      cmd.emplace_back(absl::StrCat("key:", (i * 7 + j) % kMax));
+    cmds.push_back(std::move(cmd));
+  }
+
+  // Sample the peak number of in-flight tiered reads on the shard while the batch runs
+  atomic_uint32_t peak_reads{0};
+  atomic_uint64_t sample_count{0};
+  atomic_bool sampling{true};
+  auto sampler = pp_->at(0)->LaunchFiber([&] {
+    while (sampling.load(memory_order_relaxed)) {
+      uint32_t cur = EngineShard::tlocal()->tiered_storage()->GetStats().pending_read_cnt;
+      sample_count.fetch_add(1, memory_order_relaxed);
+      if (cur > peak_reads.load(memory_order_relaxed))
+        peak_reads.store(cur, memory_order_relaxed);
+      ThisFiber::Yield();
+    }
+  });
+
+  // Dispatch them all at once through the squashing pipeline.
+  RunMany(cmds);
+
+  sampling.store(false, memory_order_relaxed);
+  sampler.JoinIfNeeded();
+  auto m = GetMetrics();
+  LOG(INFO) << "peak_reads=" << peak_reads.load() << " samples=" << sample_count.load()
+            << " total_fetches=" << m.tiered_stats.total_fetches
+            << " total_stashes=" << m.tiered_stats.total_stashes;
+
+  // Must be more than max arguments
+  EXPECT_GT(peak_reads.load(memory_order_relaxed), 10u)
+      << "expected concurrent tiered reads while executing the squashed batch";
 }
 
 // Issue many APPEND commands to an offloaded value that are executed at once (with CLIENT PAUSE).
@@ -1261,6 +1320,90 @@ TEST_F(PureDiskTSTest, BitopsBitFieldRoOnExternal) {
   ExpectConditionWithinTimeout([this] { return GetMetrics().tiered_stats.total_stashes >= 1; });
 
   EXPECT_THAT(Run({"BITFIELD_RO", "bm", "GET", "u8", "0"}), RespArray(ElementsAre(IntArg(42))));
+}
+
+// HLL reads its value synchronously (GetSlice/GetString), which must handle
+// an offloaded value instead of tripping CHECK(!IsExternal()).
+TEST_F(PureDiskTSTest, PFCountOnExternal) {
+  BuildDenseHll("hll");  // 6000 distinct elements
+  ExpectConditionWithinTimeout([this] { return GetMetrics().tiered_stats.total_stashes >= 1; });
+
+  // Estimate is within a few percent; a wrong error->0 mapping would fail here.
+  EXPECT_NEAR(CheckedInt({"PFCOUNT", "hll"}), 6000, 600);
+}
+
+TEST_F(PureDiskTSTest, PFMergeOnExternal) {
+  BuildDenseHll("src1");  // src1:* elements
+  BuildDenseHll("src2");  // disjoint src2:* elements
+  ExpectConditionWithinTimeout([this] { return GetMetrics().tiered_stats.total_stashes >= 2; });
+
+  EXPECT_EQ(Run({"PFMERGE", "dst", "src1", "src2"}), "OK");
+  // Disjoint sources -> merged cardinality is the sum (~12000).
+  EXPECT_NEAR(CheckedInt({"PFCOUNT", "dst"}), 12000, 1200);
+}
+
+// RunMany squashes the batch (like Connection::SquashPipeline); a squashed read
+// suspending for a tiered read while values offload concurrently must not
+// corrupt the shared transaction.
+TEST_F(PureDiskTSTest, MGetSquashOnExternal) {
+  const int kNum = 12;
+  const string big(5000, 'A');
+  auto val = [&](int i) { return absl::StrCat(big, "-", i); };  // distinct per key
+  for (int rep = 0; rep < 200; ++rep) {
+    vector<vector<string>> batch;
+    for (int i = 0; i < kNum; ++i)
+      batch.push_back({"SET", absl::StrCat("k", i), val(i)});
+    for (int i = 0; i < kNum; ++i)
+      batch.push_back({"GET", absl::StrCat("k", i)});  // second access -> offload
+    for (int j = 0; j < 8; ++j) {
+      vector<string> mget = {"MGET"};
+      for (int i = 0; i < kNum; ++i)
+        mget.push_back(absl::StrCat("k", i));
+      batch.push_back(std::move(mget));
+      for (int i = 0; i < kNum; ++i)
+        batch.push_back({"SETNX", absl::StrCat("k", i), "x"});  // skipped, keys exist
+    }
+    RunMany(batch);
+  }
+
+  EXPECT_EQ(Run({"PING"}), "PONG");
+  // MGET must return each value in argument order (the reorder path corruption
+  // that #7816/#7817 hit would scramble or drop entries).
+  vector<string> mget = {"MGET"};
+  for (int i = 0; i < kNum; ++i)
+    mget.push_back(absl::StrCat("k", i));
+  auto vec = Run(absl::MakeSpan(mget)).GetVec();
+  ASSERT_EQ(vec.size(), size_t(kNum));
+  for (int i = 0; i < kNum; ++i)
+    EXPECT_EQ(vec[i], val(i));
+}
+
+// PFMERGE overwrites its destination; an offloaded destination must not hit
+// CompactObj::SetString's CHECK(!IsExternal()).
+TEST_F(PureDiskTSTest, PFMergeIntoExternal) {
+  BuildDenseHll("dst");
+  BuildDenseHll("src");
+  ExpectConditionWithinTimeout([this] { return GetMetrics().tiered_stats.total_stashes >= 2; });
+
+  EXPECT_EQ(Run({"PFMERGE", "dst", "src"}), "OK");
+}
+
+// A squashed async command reads its result after the shared transaction was
+// reused by a later command; SETNX must not observe that command's status.
+TEST_F(PureDiskTSTest, SetNxSquashResult) {
+  Run({"RPUSH", "mylist", "a"});  // wrong type for INCR
+  for (int rep = 0; rep < 300; ++rep) {
+    vector<vector<string>> batch;
+    for (int i = 0; i < 8; ++i) {
+      batch.push_back({"SETNX", absl::StrCat("k", i), "v"});
+      batch.push_back({"INCR", "mylist"});  // leaves WRONG_TYPE
+    }
+    RunMany(batch);
+  }
+  EXPECT_EQ(Run({"PING"}), "PONG");
+  // SETNX still reports its own outcome, not a neighbour's status.
+  EXPECT_EQ(CheckedInt({"SETNX", "fresh", "v"}), 1);
+  EXPECT_EQ(CheckedInt({"SETNX", "fresh", "w"}), 0);
 }
 
 }  // namespace dfly
