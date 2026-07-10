@@ -340,9 +340,11 @@ std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(
       }
       case search::VectorDataType::INT8: {
         double d = v.as<double>();
-        if (!std::isfinite(d))
+        // Bound the magnitude before lround (keeps it in-range for long); round to nearest and
+        // reject anything that rounds outside int8 rather than wrapping.
+        if (!std::isfinite(d) || d < -129.0 || d > 128.0)
           return std::nullopt;
-        long r = std::lround(d);  // round to nearest; reject out-of-range rather than wrap
+        long r = std::lround(d);
         if (r < -128 || r > 127)
           return std::nullopt;
         auto x = static_cast<int8_t>(r);
@@ -351,7 +353,7 @@ std::optional<BaseAccessor::VectorInfo> JsonAccessor::GetVector(
       }
       case search::VectorDataType::UINT8: {
         double d = v.as<double>();
-        if (!std::isfinite(d))
+        if (!std::isfinite(d) || d < -1.0 || d > 256.0)
           return std::nullopt;
         long r = std::lround(d);
         if (r < 0 || r > 255)

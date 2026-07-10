@@ -1490,6 +1490,9 @@ std::optional<std::string> ValidateHnswKnnBlob(const search::AstKnnNode* knn,
 std::vector<std::pair<float, search::GlobalDocId>> SearchHnswWithPrefilter(
     const search::AstKnnNode* knn, const shared_ptr<search::HnswVectorIndex>& index,
     std::optional<std::vector<search::GlobalDocId>> prefilter_global_docs_ids) {
+  // Callers validate the blob width and surface an error (ValidateHnswKnnBlob). This guard is a
+  // release-safety net against OOB reads if a future call site forgets; DCHECK flags that misuse.
+  DCHECK_EQ(knn->blob.size(), index->GetDim() * search::ElementSize(index->GetDataType()));
   if (knn->blob.size() != index->GetDim() * search::ElementSize(index->GetDataType()))
     return {};
 

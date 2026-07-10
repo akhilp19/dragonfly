@@ -1531,6 +1531,51 @@ TEST_F(SearchFamilyTest, HnswKnnFloat64LargeDim) {
   EXPECT_THAT(resp, MatchEntry("d:a", "dist", "0"));
 }
 
+TEST_F(SearchFamilyTest, VectorUnknownTypeRejected) {
+  // A non-standard TYPE is rejected on a normal FT.CREATE (the replay-only coerce does not apply).
+  for (string_view bogus : {"BOGUS", "FP32", "FLOAT8", ""}) {
+    EXPECT_THAT(Run({"FT.CREATE", "idx", "ON", "HASH", "SCHEMA", "v", "VECTOR", "FLAT", "6", "TYPE",
+                     bogus, "DIM", "3", "DISTANCE_METRIC", "L2"}),
+                ErrArg("Parse error of vector parameters"))
+        << "TYPE=" << bogus;
+  }
+}
+
+TEST_F(SearchFamilyTest, HnswVectorRangeInt8) {
+  // VECTOR_RANGE on a non-float dtype: exercises the width-aware range validation/decode seam.
+  auto Int8Bytes = [](int v) { return string(1, static_cast<char>(static_cast<int8_t>(v))); };
+  Run({"FT.CREATE", "idx", "ON", "HASH", "SCHEMA", "pos", "VECTOR", "HNSW", "6", "TYPE", "INT8",
+       "DIM", "1", "DISTANCE_METRIC", "L2"});
+  for (int i = 0; i < 10; i++)
+    Run({"HSET", absl::StrFormat("k%d", i), "pos", Int8Bytes(i)});
+
+  const string q = Int8Bytes(5);
+  auto resp = Run({"FT.SEARCH", "idx", "@pos:[VECTOR_RANGE 1.5 $vec]=>{$YIELD_DISTANCE_AS: dist}",
+                   "PARAMS", "2", "vec", q, "LIMIT", "0", "10"});
+  EXPECT_THAT(resp, AreDocIds("k4", "k5", "k6"));
+}
+
+TEST_F(SearchFamilyTest, FtHybridInt8) {
+  // FT.HYBRID has its own vector-width validation, separate from the plain KNN path.
+  auto Int8Vec = [](std::initializer_list<int> vals) {
+    string s;
+    for (int v : vals)
+      s.push_back(static_cast<char>(static_cast<int8_t>(v)));
+    return s;
+  };
+  EXPECT_EQ(Run({"FT.CREATE", "vidx", "ON", "HASH", "SCHEMA", "t", "TEXT", "v", "VECTOR", "FLAT",
+                 "6", "TYPE", "INT8", "DIM", "3", "DISTANCE_METRIC", "L2"}),
+            "OK");
+  Run({"HSET", "d:a", "t", "hello world", "v", Int8Vec({1, 2, 3})});
+  Run({"HSET", "d:b", "t", "hello there", "v", Int8Vec({40, 50, 60})});
+
+  auto resp = Run({"FT.HYBRID", "vidx", "SEARCH", "hello", "VSIM", "@v", "$b", "KNN", "5", "PARAMS",
+                   "2", "b", Int8Vec({1, 2, 3})});
+  ASSERT_HYBRID_RESP(resp);
+  EXPECT_EQ(HybridTotal(resp), 2);
+  EXPECT_THAT(HybridKeys(resp), UnorderedElementsAre("d:a", "d:b"));
+}
+
 TEST_F(SearchFamilyTest, HashHnswKnnReturnsImplicitVectorScore) {
   Run({"FT.CREATE", "idx",  "ON", "HASH", "PREFIX",  "1",   "d:", "SCHEMA",          "v",
        "VECTOR",    "HNSW", "8",  "TYPE", "FLOAT32", "DIM", "3",  "DISTANCE_METRIC", "L2",
