@@ -391,7 +391,7 @@ int TypeForFamily(size_t family) {
       kNoCommandMemoryType,  // cluster
       kNoCommandMemoryType,  // acl
   };
-  DCHECK_LT(kFamilyToType.size(), acl::NumberOfFamilies());
+  DCHECK_LT(family, kFamilyToType.size());
   return kFamilyToType[family];
 }
 
