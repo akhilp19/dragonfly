@@ -144,6 +144,9 @@ using strings::HumanReadableNumBytes;
 
 namespace dfly {
 
+// Forward-declared here to avoid pulling the heavy protocol_client.h into this translation unit.
+void ValidateClientTlsFlags();
+
 namespace {
 
 #if ABSL_HAVE_ADDRESS_SANITIZER
@@ -1119,6 +1122,11 @@ Usage: dragonfly [FLAGS]
     LOG(ERROR) << "dbnum is too big. Exiting...";
     return 1;
   }
+
+  // Validate TLS flags: done BEFORE creating the pidfile and before starting the proactor
+  // pool. On invalid config ValidateClientTlsFlags() calls exit(1); doing it here avoids
+  // leaving a stale pidfile behind and avoids aborting during fiber-runtime teardown.
+  dfly::ValidateClientTlsFlags();
 
   string pidfile_path = GetFlag(FLAGS_pidfile);
   if (!pidfile_path.empty()) {
